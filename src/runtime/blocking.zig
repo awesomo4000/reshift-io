@@ -63,38 +63,36 @@ fn posixError(err: anyerror) posix.E {
 /// The body can freely call io.Read.perform(), io.Write.perform(),
 /// io.Accept.perform(), and io.Close.perform().
 pub fn runWithIO(comptime Result: type, body: *const fn () Result) Result {
-    // Nest handlers: each one wraps the next via thread-local body fn.
-    // Because handlers are value types with comptime tail_fn, we construct
-    // them inline — no closures needed.
+    // Nest handlers by threading the user body pointer explicitly with runWith.
+    // This avoids mutable namespace state when composing the layers.
+    const BodyFn = *const fn () Result;
     const Nest = struct {
         // Each layer constructs its handler and runs the next layer as its body.
         // The innermost layer runs the actual user body.
 
-        var user_body: *const fn () Result = undefined;
-
-        fn withClose() Result {
+        fn withClose(user_body: *const BodyFn) Result {
             const h = Handler(io.Close, Result){ .tail_fn = &handleClose };
-            return h.run(user_body);
+            return h.run(user_body.*);
         }
 
-        fn withAccept() Result {
+        fn withAccept(user_body: *const BodyFn) Result {
             const h = Handler(io.Accept, Result){ .tail_fn = &handleAccept };
-            return h.run(&withClose);
+            return h.runWith(user_body, &withClose);
         }
 
-        fn withWrite() Result {
+        fn withWrite(user_body: *const BodyFn) Result {
             const h = Handler(io.Write, Result){ .tail_fn = &handleWrite };
-            return h.run(&withAccept);
+            return h.runWith(user_body, &withAccept);
         }
 
-        fn withRead() Result {
+        fn withRead(user_body: *const BodyFn) Result {
             const h = Handler(io.Read, Result){ .tail_fn = &handleRead };
-            return h.run(&withWrite);
+            return h.runWith(user_body, &withWrite);
         }
     };
 
-    Nest.user_body = body;
-    return Nest.withRead();
+    var user_body = body;
+    return Nest.withRead(&user_body);
 }
 
 /// Individual handler constructors for when you need fine-grained control.
